@@ -17,12 +17,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-
+from torch.utils.tensorboard import SummaryWriter
 from model import DRL4TSP, Encoder
+import utilities
+from utilities import Logger
+import time
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-#device = torch.device('cpu')
-
 
 class StateCritic(nn.Module):
     """Estimates the problem complexity.
@@ -125,9 +126,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
           **kwargs):
     """Constructs the main actor & critic networks, and performs all training."""
 
-    now = '%s' % datetime.datetime.now().time()
-    now = now.replace(':', '_')
-    save_dir = os.path.join(task, '%d' % num_nodes, now)
+    save_dir = args.save_dir
 
     checkpoint_dir = os.path.join(save_dir, 'checkpoints')
     if not os.path.exists(checkpoint_dir):
@@ -141,7 +140,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
 
     best_params = None
     best_reward = np.inf
-
+    start_time = time.time()
     for epoch in range(20):
 
         actor.train()
@@ -151,9 +150,8 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
 
         epoch_start = time.time()
         start = epoch_start
-
+        prt.print_out("Training started...")
         for batch_idx, batch in enumerate(train_loader):
-
             static, dynamic, x0 = batch
 
             static = static.to(device)
@@ -194,8 +192,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
 
                 mean_loss = np.mean(losses[-100:])
                 mean_reward = np.mean(rewards[-100:])
-
-                print('  Batch %d/%d, reward: %2.3f, loss: %2.4f, took: %2.4fs' %
+                prt.print_out('  Batch %d/%d, reward: %2.3f, loss: %2.4f, took: %2.4fs' %
                       (batch_idx, len(train_loader), mean_reward, mean_loss,
                        times[-1]))
 
@@ -230,10 +227,13 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
             save_path = os.path.join(save_dir, 'critic.pt')
             torch.save(critic.state_dict(), save_path)
 
-        print('Mean epoch loss/reward: %2.4f, %2.4f, %2.4f, took: %2.4fs '\
+        prt.print_out('Mean epoch loss/reward: %2.4f, %2.4f, %2.4f, took: %2.4fs '\
               '(%2.4fs / 100 batches)\n' % \
               (mean_loss, mean_reward, mean_valid, time.time() - epoch_start,
               np.mean(times)))
+
+    prt.print_out('Total time is {}'.format( \
+        time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))))
 
 
 
@@ -304,30 +304,30 @@ def train_vrp(args):
     # Determines the maximum amount of load for a vehicle based on num nodes
     LOAD_DICT = {10: 20, 20: 30, 50: 40, 100: 50}
     MAX_DEMAND = 9
-    STATIC_SIZE = 2 # (x, y)
+    STATIC_SIZE = 2 # (x, y) coordinates
     DYNAMIC_SIZE = 2 # (load, demand)
 
     max_load = LOAD_DICT[args.num_nodes]
 
-    train_data = VehicleRoutingDataset(args.train_size,
-                                       args.num_nodes,
-                                       max_load,
-                                       MAX_DEMAND,
-                                       args.seed)
+    train_data = VehicleRoutingDataset(args.train_size, #100000
+                                       args.num_nodes,  #10 customer
+                                       max_load,        #20
+                                       MAX_DEMAND,      #9
+                                       args.seed)       #123456
 
-    valid_data = VehicleRoutingDataset(args.valid_size,
-                                       args.num_nodes,
-                                       max_load,
-                                       MAX_DEMAND,
+    valid_data = VehicleRoutingDataset(args.valid_size, #1000
+                                       args.num_nodes,  #10 customer
+                                       max_load,        #20
+                                       MAX_DEMAND,      #9
                                        args.seed + 1)
 
-    actor = DRL4TSP(STATIC_SIZE,
-                    DYNAMIC_SIZE,
-                    args.hidden_size,
-                    train_data.update_dynamic,
+    actor = DRL4TSP(STATIC_SIZE,                # 2 (x,y)
+                    DYNAMIC_SIZE,               # 2 (load, demand)
+                    args.hidden_size,           # default 128
+                    train_data.update_dynamic,  #
                     train_data.update_mask,
-                    args.num_layers,
-                    args.dropout).to(device)
+                    args.num_layers,            #1
+                    args.dropout).to(device)    #0.1
 
     critic = StateCritic(STATIC_SIZE, DYNAMIC_SIZE, args.hidden_size).to(device)
 
@@ -357,7 +357,10 @@ def train_vrp(args):
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
     out = validate(test_loader, actor, vrp.reward, vrp.render, test_dir, num_plot=5)
 
-    print('Average tour length: ', out)
+    prt.print_out('Average tour length: ', out)
+
+def str2bool(v):
+    return v.lower() in ('true', '1')
 
 
 if __name__ == '__main__':
@@ -377,12 +380,36 @@ if __name__ == '__main__':
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size',default=1000000, type=int)
     parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--gpu', default=-1, type=int)
+    parser.add_argument('--model_dir', type=str, default='')
+    parser.add_argument('--log_dir', type=str, default='logs')
+    parser.add_argument('--stdout_print', default=True, type=str2bool, help='print control')
 
     args = parser.parse_args()
 
-    #print('NOTE: SETTTING CHECKPOINT: ')
-    #args.checkpoint = os.path.join('vrp', '10', '12_59_47.350165' + os.path.sep)
-    #print(args.checkpoint)
+    # allow gpu to be specified from command line for testing
+    if args.gpu >= 0:
+        chosen_device = 'cuda:%d' % (args.gpu)
+        globals()['device'] = torch.device(chosen_device)
+
+    # create log folder and log file
+    now = '%s' % datetime.datetime.now().time()
+    now = now.replace(':', '_')
+    args.save_dir = os.path.join(args.task, '%d' % args.num_nodes, now)
+    # file to write the stdout
+    try:
+        os.makedirs(args.save_dir)
+    except:
+        pass
+    out_file = open(os.path.join(args.save_dir, 'results.txt'), 'w+')
+    prt = Logger(out_file, args.stdout_print)
+
+    print(device)
+
+    args.device = device
+    # print the run args
+    for key, value in sorted((vars(args)).items()):
+        prt.print_out("{}: {}".format(key, value))
 
     if args.task == 'tsp':
         train_tsp(args)

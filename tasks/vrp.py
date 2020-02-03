@@ -47,7 +47,7 @@ class VehicleRoutingDataset(Dataset):
         # then scaled by the maximum load. E.g. if load=10 and max_demand=30, 
         # demands will be scaled to the range (0, 3)
         demands = torch.randint(1, max_demand + 1, dynamic_shape)
-        demands = demands / float(max_load)
+        demands = demands / float(max_load)   # scale demand by max_load (why?)
 
         demands[:, 0, 0] = 0  # depot starts with a demand of 0
         self.dynamic = torch.tensor(np.concatenate((loads, demands), axis=1))
@@ -84,8 +84,8 @@ class VehicleRoutingDataset(Dataset):
 
         if repeat_home.any():
             new_mask[repeat_home.nonzero(), 0] = 1.
-        if (1 - repeat_home).any():
-            new_mask[(1 - repeat_home).nonzero(), 0] = 0.
+        if (~repeat_home).any(): # mask inversion updated for pytorch > 1
+            new_mask[(~repeat_home).nonzero(), 0] = 0.
 
         # ... unless we're waiting for all other samples in a minibatch to finish
         has_no_load = loads[:, 0].eq(0).float()
@@ -132,7 +132,8 @@ class VehicleRoutingDataset(Dataset):
             all_demands[depot.nonzero().squeeze(), 0] = 0.
 
         tensor = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
-        return torch.tensor(tensor.data, device=dynamic.device)
+
+        return tensor.data.clone().detach()
 
 
 def reward(static, tour_indices):

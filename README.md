@@ -7,7 +7,7 @@ Currently, Traveling Salesman Problems and Vehicle Routing Problems are supporte
 ## Requirements:
 
 * Python 3.6
-* pytorch=0.4.1
+* pytorch=1.4
 * matplotlib
 
 # To Run
