@@ -32,8 +32,6 @@ class VehicleRoutingDataset(Dataset):
         torch.manual_seed(seed)
 
         self.num_samples = num_samples
-        self.max_load = max_load
-        self.max_demand = max_demand
 
         # Depot location will be the first node in each
         locations = torch.rand((num_samples, 2, input_size + 1))
@@ -59,7 +57,10 @@ class VehicleRoutingDataset(Dataset):
 
     def __getitem__(self, idx) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         # (static, dynamic, start_loc)
-        return (self.static[idx], self.dynamic[idx], self.static[idx, :, 0:1])
+        static_single = self.static[idx]    # all the customer (x,y) location
+        dynamic = self.dynamic[idx]         # all the dynamic (load, demand)
+        depot = self.static[idx, :, 0:1]    # depot location
+        return (static_single, dynamic, depot)
 
     def update_mask(self, mask, dynamic, chosen_idx=None):
         """Updates the mask used to hide non-valid states.
@@ -137,147 +138,77 @@ class VehicleRoutingDataset(Dataset):
 
         return tensor.data.clone().detach()
 
+class Environment(object):
 
-def reward(static, tour_indices):
-    """
-    Euclidean distance between all cities / nodes given by tour_indices
-    """
-
-    # Convert the indices back into a tour
-    idx = tour_indices.unsqueeze(1).expand(-1, static.size(1), -1)
-    tour = torch.gather(static.data, 2, idx).permute(0, 2, 1)
-
-    # Ensure we're always returning to the depot - note the extra concat
-    # won't add any extra loss, as the euclidean distance between consecutive
-    # points is 0
-    start = static.data[:, :, 0].unsqueeze(1)
-    y = torch.cat((start, tour, start), dim=1)
-
-    # Euclidean distance between each consecutive point
-    tour_len = torch.sqrt(torch.sum(torch.pow(y[:, :-1] - y[:, 1:], 2), dim=2))
-
-    return tour_len.sum(1)
-
-
-def render(static, tour_indices, save_path):
-    """Plots the found solution."""
-
-    plt.close('all')
-
-    num_plots = 3 if int(np.sqrt(len(tour_indices))) >= 3 else 1
-
-    _, axes = plt.subplots(nrows=num_plots, ncols=num_plots,
-                           sharex='col', sharey='row')
-
-    if num_plots == 1:
-        axes = [[axes]]
-    axes = [a for ax in axes for a in ax]
-
-    for i, ax in enumerate(axes):
+    def reward(self, static, tour_indices):
+        """
+        Euclidean distance between all cities / nodes given by tour_indices
+        """
 
         # Convert the indices back into a tour
-        idx = tour_indices[i]
-        if len(idx.size()) == 1:
-            idx = idx.unsqueeze(0)
+        idx = tour_indices.unsqueeze(1).expand(-1, static.size(1), -1)
+        tour = torch.gather(static.data, 2, idx).permute(0, 2, 1)
 
-        idx = idx.expand(static.size(1), -1)
-        data = torch.gather(static[i].data, 1, idx).cpu().numpy()
+        # Ensure we're always returning to the depot - note the extra concat
+        # won't add any extra loss, as the euclidean distance between consecutive
+        # points is 0
+        start = static.data[:, :, 0].unsqueeze(1)
+        y = torch.cat((start, tour, start), dim=1)
 
-        start = static[i, :, 0].cpu().data.numpy()
-        x = np.hstack((start[0], data[0], start[0]))
-        y = np.hstack((start[1], data[1], start[1]))
+        # Euclidean distance between each consecutive point
+        tour_len = torch.sqrt(torch.sum(torch.pow(y[:, :-1] - y[:, 1:], 2), dim=2))
 
-        # Assign each subtour a different colour & label in order traveled
-        idx = np.hstack((0, tour_indices[i].cpu().numpy().flatten(), 0))
-        where = np.where(idx == 0)[0]
-
-        for j in range(len(where) - 1):
-
-            low = where[j]
-            high = where[j + 1]
-
-            if low + 1 == high:
-                continue
-
-            ax.plot(x[low: high + 1], y[low: high + 1], zorder=1, label=j)
-
-        ax.legend(loc="upper right", fontsize=3, framealpha=0.5)
-        ax.scatter(x, y, s=4, c='r', zorder=2)
-        ax.scatter(x[0], y[0], s=20, c='k', marker='*', zorder=3)
-
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-
-    plt.tight_layout()
-    plt.savefig(save_path, bbox_inches='tight', dpi=200)
+        return tour_len.sum(1)
 
 
-'''
-def render(static, tour_indices, save_path):
-    """Plots the found solution."""
+    def render(self, static, tour_indices, save_path):
+        """Plots the found solution."""
 
-    path = 'C:/Users/Matt/Documents/ffmpeg-3.4.2-win64-static/bin/ffmpeg.exe'
-    plt.rcParams['animation.ffmpeg_path'] = path
+        plt.close('all')
 
-    plt.close('all')
+        num_plots = 3 if int(np.sqrt(len(tour_indices))) >= 3 else 1
 
-    num_plots = min(int(np.sqrt(len(tour_indices))), 3)
-    fig, axes = plt.subplots(nrows=num_plots, ncols=num_plots,
-                             sharex='col', sharey='row')
-    axes = [a for ax in axes for a in ax]
+        _, axes = plt.subplots(nrows=num_plots, ncols=num_plots,
+                               sharex='col', sharey='row')
 
-    all_lines = []
-    all_tours = []
-    for i, ax in enumerate(axes):
+        if num_plots == 1:
+            axes = [[axes]]
+        axes = [a for ax in axes for a in ax]
 
-        # Convert the indices back into a tour
-        idx = tour_indices[i]
-        if len(idx.size()) == 1:
-            idx = idx.unsqueeze(0)
+        for i, ax in enumerate(axes):
 
-        idx = idx.expand(static.size(1), -1)
-        data = torch.gather(static[i].data, 1, idx).cpu().numpy()
+            # Convert the indices back into a tour
+            idx = tour_indices[i]
+            if len(idx.size()) == 1:
+                idx = idx.unsqueeze(0)
 
-        start = static[i, :, 0].cpu().data.numpy()
-        x = np.hstack((start[0], data[0], start[0]))
-        y = np.hstack((start[1], data[1], start[1]))
+            idx = idx.expand(static.size(1), -1)
+            data = torch.gather(static[i].data, 1, idx).cpu().numpy()
 
-        cur_tour = np.vstack((x, y))
+            start = static[i, :, 0].cpu().data.numpy()
+            x = np.hstack((start[0], data[0], start[0]))
+            y = np.hstack((start[1], data[1], start[1]))
 
-        all_tours.append(cur_tour)
-        all_lines.append(ax.plot([], [])[0])
+            # Assign each subtour a different colour & label in order traveled
+            idx = np.hstack((0, tour_indices[i].cpu().numpy().flatten(), 0))
+            where = np.where(idx == 0)[0]
 
-        ax.scatter(x, y, s=4, c='r', zorder=2)
-        ax.scatter(x[0], y[0], s=20, c='k', marker='*', zorder=3)
+            for j in range(len(where) - 1):
 
-    from matplotlib.animation import FuncAnimation
+                low = where[j]
+                high = where[j + 1]
 
-    tours = all_tours
+                if low + 1 == high:
+                    continue
 
-    def update(idx):
+                ax.plot(x[low: high + 1], y[low: high + 1], zorder=1, label=j)
 
-        for i, line in enumerate(all_lines):
+            ax.legend(loc="upper right", fontsize=3, framealpha=0.5)
+            ax.scatter(x, y, s=4, c='r', zorder=2)
+            ax.scatter(x[0], y[0], s=20, c='k', marker='*', zorder=3)
 
-            if idx >= tours[i].shape[1]:
-                continue
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
 
-            data = tours[i][:, idx]
-
-            xy_data = line.get_xydata()
-            xy_data = np.vstack((xy_data, np.atleast_2d(data)))
-
-            line.set_data(xy_data[:, 0], xy_data[:, 1])
-            line.set_linewidth(0.75)
-
-        return all_lines
-
-    anim = FuncAnimation(fig, update, init_func=None,
-                         frames=100, interval=200, blit=False,
-                         repeat=False)
-
-    anim.save('line.mp4', dpi=160)
-    plt.show()
-
-    import sys
-    sys.exit(1)
-'''
+        plt.tight_layout()
+        plt.savefig(save_path, bbox_inches='tight', dpi=200)

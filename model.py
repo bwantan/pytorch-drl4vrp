@@ -2,14 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
-# 4 classes:
-# 1. Encoder class: for linear embedding of the input data
-# 2. Attention class:
-# 3. Pointer class:
-# 4. StaticCritic class:
-# 5. DRL4TSP class:
-# This class used to do a simple encoding of inputs values
+use_cuda = torch.cuda.is_available()
+device = torch.device("cuda:0" if use_cuda else "cpu")
+
 class Encoder(nn.Module):
     """Encodes the static & dynamic states using 1d Convolution."""
 
@@ -19,7 +14,7 @@ class Encoder(nn.Module):
         self.conv = nn.Conv1d(input_size, hidden_size, kernel_size=1)
 
     def forward(self, input):
-        encoded_inputs = self.conv(input)
+        encoded_inputs = self.conv(input)   # (batch, 128, 11), input changed from 2 dimension to 128 of encoded value
         return encoded_inputs  # (batch, hidden_size, seq_len)
 
 class Attention(nn.Module):
@@ -101,7 +96,7 @@ class Pointer(nn.Module):
 
         return probs, last_hh
 
-class StateCritic(nn.Module):
+class Critic(nn.Module):
     """Estimates the problem complexity.
 
     This is a basic module that just looks at the log-probabilities predicted by
@@ -109,7 +104,7 @@ class StateCritic(nn.Module):
     """
 
     def __init__(self, static_size = 2, dynamic_size = 2, hidden_size = 128):
-        super(StateCritic, self).__init__()
+        super(Critic, self).__init__()
 
         self.static_encoder = Encoder(static_size, hidden_size)     # 2, 128
         self.dynamic_encoder = Encoder(dynamic_size, hidden_size)   # 2, 128
@@ -129,14 +124,14 @@ class StateCritic(nn.Module):
         static_hidden = self.static_encoder(static)
         dynamic_hidden = self.dynamic_encoder(dynamic)
 
-        hidden = torch.cat((static_hidden, dynamic_hidden), 1)
+        hidden = torch.cat((static_hidden, dynamic_hidden), axis=1)
 
         output = F.relu(self.fc1(hidden))
         output = F.relu(self.fc2(output))
         output = self.fc3(output).sum(dim=2)
         return output
 
-class DRL4TSP(nn.Module):
+class Actor(nn.Module):
     """Defines the main Encoder, Decoder, and Pointer combinatorial models.
 
     Parameters
@@ -169,7 +164,7 @@ class DRL4TSP(nn.Module):
 
     def __init__(self, static_size, dynamic_size, hidden_size,
                  update_fn=None, mask_fn=None, num_layers=1, dropout=0.):
-        super(DRL4TSP, self).__init__()
+        super(Actor, self).__init__()
 
         if dynamic_size < 1:
             raise ValueError(':param dynamic_size: must be > 0, even if the '

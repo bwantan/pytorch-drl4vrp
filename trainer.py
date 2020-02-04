@@ -18,39 +18,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from model import DRL4TSP, Encoder, StateCritic
+from model import Actor, Encoder, Critic
 import utilities
 from utilities import Logger
 import time
 
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if use_cuda else "cpu")
-
-# class Critic(nn.Module):
-#     """Estimates the problem complexity.
-#
-#     This is a basic module that just looks at the log-probabilities predicted by
-#     the encoder + decoder, and returns an estimate of complexity
-#     """
-#
-#     def __init__(self, hidden_size):
-#         super(Critic, self).__init__()
-#
-#         # Define the encoder & decoder models
-#         self.fc1 = nn.Conv1d(1, hidden_size, kernel_size=1)
-#         self.fc2 = nn.Conv1d(hidden_size, 20, kernel_size=1)
-#         self.fc3 = nn.Conv1d(20, 1, kernel_size=1)
-#
-#         for p in self.parameters():
-#             if len(p.shape) > 1:
-#                 nn.init.xavier_uniform_(p)
-#
-#     def forward(self, input):
-#
-#         output = F.relu(self.fc1(input.unsqueeze(1)))
-#         output = F.relu(self.fc2(output)).squeeze(2)
-#         output = self.fc3(output).sum(dim=2)
-#         return out
 
 def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
              num_plot=5):
@@ -84,10 +58,8 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
     actor.train()
     return np.mean(rewards)
 
-
 def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
-          render_fn, batch_size, actor_lr, critic_lr, max_grad_norm,
-          **kwargs):
+          render_fn, batch_size, actor_lr, critic_lr, max_grad_norm, **kwargs):
     """Constructs the main actor & critic networks, and performs all training."""
 
     save_dir = args.save_dir
@@ -98,9 +70,9 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
 
     actor_optim = optim.Adam(actor.parameters(), lr=actor_lr)
     critic_optim = optim.Adam(critic.parameters(), lr=critic_lr)
-
     train_loader = DataLoader(train_data, batch_size, True, num_workers=0)
     valid_loader = DataLoader(valid_data, batch_size, False, num_workers=0)
+
 
     best_params = None
     best_reward = np.inf
@@ -116,14 +88,14 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
         start = epoch_start
         printer.print_out("Training started...")
         for batch_idx, batch in enumerate(train_loader):
-            static, dynamic, x0 = batch
+            static, dynamic, depot_loc = batch      # return batch of customers (static), load and demand (dynamic), depot locations
 
             static = static.to(device)
             dynamic = dynamic.to(device)
-            x0 = x0.to(device) if len(x0) > 0 else None
+            depot_loc = depot_loc.to(device) if len(depot_loc) > 0 else None
 
             # Full forward pass through the dataset
-            tour_indices, tour_logp = actor(static, dynamic, x0)
+            tour_indices, tour_logp = actor(static, dynamic, depot_loc)
 
             # Sum the log probabilities for each city in the tour
             reward = reward_fn(static, tour_indices)
@@ -218,7 +190,7 @@ def train_tsp(args):
 
     update_fn = None
 
-    actor = DRL4TSP(STATIC_SIZE,
+    actor = Actor(STATIC_SIZE,
                     DYNAMIC_SIZE,
                     args.hidden_size,
                     update_fn,
@@ -226,7 +198,7 @@ def train_tsp(args):
                     args.num_layers,
                     args.dropout).to(device)
 
-    critic = StateCritic(STATIC_SIZE, DYNAMIC_SIZE, args.hidden_size).to(device)
+    critic = Critic(STATIC_SIZE, DYNAMIC_SIZE, args.hidden_size).to(device)
 
     kwargs = vars(args)
     kwargs['train_data'] = train_data
@@ -262,7 +234,7 @@ def train_vrp(args):
     # VRP100, Capacity 50: 17.23  (Greedy)
 
     from tasks import vrp
-    from tasks.vrp import VehicleRoutingDataset
+    from tasks.vrp import VehicleRoutingDataset, Environment
 
     # Determines the maximum amount of load for a vehicle based on num nodes
     LOAD_DICT = {10: 20,
@@ -276,35 +248,42 @@ def train_vrp(args):
     max_load = LOAD_DICT[args.num_nodes]    # dynamic set max load from input parameters
 
     # Train/Validation data format
-    # return static, dynamic, hh
+    # Training data: 100000 of customer (x,y) coordinates and associated (load, demand) values
     train_data = VehicleRoutingDataset(args.train_size, # default 100000 problems
                                        args.num_nodes,  # default 10 customer
                                        max_load,        # set fom LOAD_DICT
                                        MAX_DEMAND,      # 9
                                        args.seed)       # 123456
 
+    # Validation data: 1000 of customer (x,y) coordinates and associated (load, demand) values
     valid_data = VehicleRoutingDataset(args.valid_size, #1000
                                        args.num_nodes,  #10 customer
                                        max_load,        #20
                                        MAX_DEMAND,      #9
                                        args.seed + 1)
 
-    actor = DRL4TSP(STATIC_SIZE,                # 2 (x,y)
+    # Build critic model
+    critic = Critic(STATIC_SIZE,  # 2 (x,y)
+                    DYNAMIC_SIZE,  # 2 (load, demand)s
+                    args.hidden_size).to(device)
+
+    # Build actor model
+    actor = Actor(STATIC_SIZE,                # 2 (x,y)
                     DYNAMIC_SIZE,               # 2 (load, demand)
                     args.hidden_size,           # default 128
                     train_data.update_dynamic,  #
                     train_data.update_mask,
                     args.num_layers,            #1
                     args.dropout).to(device)    #0.1
-
-    critic = StateCritic(STATIC_SIZE, DYNAMIC_SIZE, args.hidden_size).to(device)
+    env = Environment()
 
     kwargs = vars(args)   # create kwarg object and assign additional properties
     kwargs['train_data'] = train_data
     kwargs['valid_data'] = valid_data
-    kwargs['reward_fn'] = vrp.reward
-    kwargs['render_fn'] = vrp.render
+    kwargs['reward_fn'] = env.reward
+    kwargs['render_fn'] = env.render
 
+    # load back the weights that have been trained
     if args.checkpoint:
         path = os.path.join(args.checkpoint, 'actor.pt')
         actor.load_state_dict(torch.load(path, device))
@@ -312,9 +291,11 @@ def train_vrp(args):
         path = os.path.join(args.checkpoint, 'critic.pt')
         critic.load_state_dict(torch.load(path, device))
 
+    # if not testing, start training
     if not args.test:
         train(actor, critic, **kwargs)
 
+    # Testing data: 1000 of customer (x,y) coordinates and associated (load, demand) values
     test_data = VehicleRoutingDataset(args.valid_size,
                                       args.num_nodes,
                                       max_load,
@@ -339,7 +320,7 @@ if __name__ == '__main__':
     parser.add_argument('--actor_lr', default=5e-4, type=float)
     parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    parser.add_argument('--batch_size', default=256, type=int)
+    parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
