@@ -2,20 +2,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+# 4 classes:
+# 1. Encoder class: for linear embedding of the input data
+# 2. Attention class:
+# 3. Pointer class:
+# 4. StaticCritic class:
+# 5. DRL4TSP class:
+# This class used to do a simple encoding of inputs values
 class Encoder(nn.Module):
     """Encodes the static & dynamic states using 1d Convolution."""
 
     def __init__(self, input_size, hidden_size):
         super(Encoder, self).__init__()
+        # one hidden layer with 128 size
         self.conv = nn.Conv1d(input_size, hidden_size, kernel_size=1)
 
     def forward(self, input):
-        output = self.conv(input)
-        return output  # (batch, hidden_size, seq_len)
-
+        encoded_inputs = self.conv(input)
+        return encoded_inputs  # (batch, hidden_size, seq_len)
 
 class Attention(nn.Module):
     """Calculates attention over the input nodes given the current state."""
@@ -44,7 +49,6 @@ class Attention(nn.Module):
         attns = torch.bmm(v, torch.tanh(torch.bmm(W, hidden)))
         attns = F.softmax(attns, dim=2)  # (batch, seq_len)
         return attns
-
 
 class Pointer(nn.Module):
     """Calculates the next state given the previous state and input embeddings."""
@@ -97,6 +101,40 @@ class Pointer(nn.Module):
 
         return probs, last_hh
 
+class StateCritic(nn.Module):
+    """Estimates the problem complexity.
+
+    This is a basic module that just looks at the log-probabilities predicted by
+    the encoder + decoder, and returns an estimate of complexity
+    """
+
+    def __init__(self, static_size = 2, dynamic_size = 2, hidden_size = 128):
+        super(StateCritic, self).__init__()
+
+        self.static_encoder = Encoder(static_size, hidden_size)     # 2, 128
+        self.dynamic_encoder = Encoder(dynamic_size, hidden_size)   # 2, 128
+
+        # Define the encoder & decoder models
+        self.fc1 = nn.Conv1d(hidden_size * 2, 20, kernel_size=1)
+        self.fc2 = nn.Conv1d(20, 20, kernel_size=1)
+        self.fc3 = nn.Conv1d(20, 1, kernel_size=1)
+
+        for p in self.parameters():
+            if len(p.shape) > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, static, dynamic):
+
+        # Use the probabilities of visiting each
+        static_hidden = self.static_encoder(static)
+        dynamic_hidden = self.dynamic_encoder(dynamic)
+
+        hidden = torch.cat((static_hidden, dynamic_hidden), 1)
+
+        output = F.relu(self.fc1(hidden))
+        output = F.relu(self.fc2(output))
+        output = self.fc3(output).sum(dim=2)
+        return output
 
 class DRL4TSP(nn.Module):
     """Defines the main Encoder, Decoder, and Pointer combinatorial models.
@@ -244,7 +282,6 @@ class DRL4TSP(nn.Module):
         tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
 
         return tour_idx, tour_logp
-
 
 if __name__ == '__main__':
     raise Exception('Cannot be called from main')

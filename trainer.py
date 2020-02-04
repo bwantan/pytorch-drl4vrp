@@ -18,75 +18,39 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from model import DRL4TSP, Encoder
+from model import DRL4TSP, Encoder, StateCritic
 import utilities
 from utilities import Logger
 import time
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+use_cuda = torch.cuda.is_available()
+device = torch.device("cuda:0" if use_cuda else "cpu")
 
-class StateCritic(nn.Module):
-    """Estimates the problem complexity.
-
-    This is a basic module that just looks at the log-probabilities predicted by
-    the encoder + decoder, and returns an estimate of complexity
-    """
-
-    def __init__(self, static_size, dynamic_size, hidden_size):
-        super(StateCritic, self).__init__()
-
-        self.static_encoder = Encoder(static_size, hidden_size)
-        self.dynamic_encoder = Encoder(dynamic_size, hidden_size)
-
-        # Define the encoder & decoder models
-        self.fc1 = nn.Conv1d(hidden_size * 2, 20, kernel_size=1)
-        self.fc2 = nn.Conv1d(20, 20, kernel_size=1)
-        self.fc3 = nn.Conv1d(20, 1, kernel_size=1)
-
-        for p in self.parameters():
-            if len(p.shape) > 1:
-                nn.init.xavier_uniform_(p)
-
-    def forward(self, static, dynamic):
-
-        # Use the probabilities of visiting each
-        static_hidden = self.static_encoder(static)
-        dynamic_hidden = self.dynamic_encoder(dynamic)
-
-        hidden = torch.cat((static_hidden, dynamic_hidden), 1)
-
-        output = F.relu(self.fc1(hidden))
-        output = F.relu(self.fc2(output))
-        output = self.fc3(output).sum(dim=2)
-        return output
-
-
-class Critic(nn.Module):
-    """Estimates the problem complexity.
-
-    This is a basic module that just looks at the log-probabilities predicted by
-    the encoder + decoder, and returns an estimate of complexity
-    """
-
-    def __init__(self, hidden_size):
-        super(Critic, self).__init__()
-
-        # Define the encoder & decoder models
-        self.fc1 = nn.Conv1d(1, hidden_size, kernel_size=1)
-        self.fc2 = nn.Conv1d(hidden_size, 20, kernel_size=1)
-        self.fc3 = nn.Conv1d(20, 1, kernel_size=1)
-
-        for p in self.parameters():
-            if len(p.shape) > 1:
-                nn.init.xavier_uniform_(p)
-
-    def forward(self, input):
-
-        output = F.relu(self.fc1(input.unsqueeze(1)))
-        output = F.relu(self.fc2(output)).squeeze(2)
-        output = self.fc3(output).sum(dim=2)
-        return output
-
+# class Critic(nn.Module):
+#     """Estimates the problem complexity.
+#
+#     This is a basic module that just looks at the log-probabilities predicted by
+#     the encoder + decoder, and returns an estimate of complexity
+#     """
+#
+#     def __init__(self, hidden_size):
+#         super(Critic, self).__init__()
+#
+#         # Define the encoder & decoder models
+#         self.fc1 = nn.Conv1d(1, hidden_size, kernel_size=1)
+#         self.fc2 = nn.Conv1d(hidden_size, 20, kernel_size=1)
+#         self.fc3 = nn.Conv1d(20, 1, kernel_size=1)
+#
+#         for p in self.parameters():
+#             if len(p.shape) > 1:
+#                 nn.init.xavier_uniform_(p)
+#
+#     def forward(self, input):
+#
+#         output = F.relu(self.fc1(input.unsqueeze(1)))
+#         output = F.relu(self.fc2(output)).squeeze(2)
+#         output = self.fc3(output).sum(dim=2)
+#         return out
 
 def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
              num_plot=5):
@@ -150,7 +114,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
 
         epoch_start = time.time()
         start = epoch_start
-        prt.print_out("Training started...")
+        printer.print_out("Training started...")
         for batch_idx, batch in enumerate(train_loader):
             static, dynamic, x0 = batch
 
@@ -192,7 +156,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
 
                 mean_loss = np.mean(losses[-100:])
                 mean_reward = np.mean(rewards[-100:])
-                prt.print_out('  Batch %d/%d, reward: %2.3f, loss: %2.4f, took: %2.4fs' %
+                printer.print_out('  Batch %d/%d, reward: %2.3f, loss: %2.4f, took: %2.4fs' %
                       (batch_idx, len(train_loader), mean_reward, mean_loss,
                        times[-1]))
 
@@ -227,16 +191,15 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
             save_path = os.path.join(save_dir, 'critic.pt')
             torch.save(critic.state_dict(), save_path)
 
-        prt.print_out('Mean epoch loss/reward: %2.4f, %2.4f, %2.4f, took: %2.4fs '\
+        printer.print_out('Mean epoch loss/reward: %2.4f, %2.4f, %2.4f, took: %2.4fs '\
               '(%2.4fs / 100 batches)\n' % \
               (mean_loss, mean_reward, mean_valid, time.time() - epoch_start,
               np.mean(times)))
 
-    prt.print_out('Total time is {}'.format( \
+    printer.print_out('Total time is {}'.format( \
         time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))))
 
-
-
+# setup training for TSP problem
 def train_tsp(args):
 
     # Goals from paper:
@@ -289,7 +252,7 @@ def train_tsp(args):
 
     print('Average tour length: ', out)
 
-
+# setup training for VRP problem
 def train_vrp(args):
 
     # Goals from paper:
@@ -302,18 +265,23 @@ def train_vrp(args):
     from tasks.vrp import VehicleRoutingDataset
 
     # Determines the maximum amount of load for a vehicle based on num nodes
-    LOAD_DICT = {10: 20, 20: 30, 50: 40, 100: 50}
-    MAX_DEMAND = 9
-    STATIC_SIZE = 2 # (x, y) coordinates
-    DYNAMIC_SIZE = 2 # (load, demand)
+    LOAD_DICT = {10: 20,
+                 20: 30,
+                 50: 40,
+                 100: 50}
+    MAX_DEMAND = 9      # max demand from the customer
+    STATIC_SIZE = 2     # (x, y) coordinates
+    DYNAMIC_SIZE = 2    # (load, demand)
 
-    max_load = LOAD_DICT[args.num_nodes]
+    max_load = LOAD_DICT[args.num_nodes]    # dynamic set max load from input parameters
 
-    train_data = VehicleRoutingDataset(args.train_size, #100000
-                                       args.num_nodes,  #10 customer
-                                       max_load,        #20
-                                       MAX_DEMAND,      #9
-                                       args.seed)       #123456
+    # Train/Validation data format
+    # return static, dynamic, hh
+    train_data = VehicleRoutingDataset(args.train_size, # default 100000 problems
+                                       args.num_nodes,  # default 10 customer
+                                       max_load,        # set fom LOAD_DICT
+                                       MAX_DEMAND,      # 9
+                                       args.seed)       # 123456
 
     valid_data = VehicleRoutingDataset(args.valid_size, #1000
                                        args.num_nodes,  #10 customer
@@ -331,7 +299,7 @@ def train_vrp(args):
 
     critic = StateCritic(STATIC_SIZE, DYNAMIC_SIZE, args.hidden_size).to(device)
 
-    kwargs = vars(args)
+    kwargs = vars(args)   # create kwarg object and assign additional properties
     kwargs['train_data'] = train_data
     kwargs['valid_data'] = valid_data
     kwargs['reward_fn'] = vrp.reward
@@ -357,14 +325,11 @@ def train_vrp(args):
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
     out = validate(test_loader, actor, vrp.reward, vrp.render, test_dir, num_plot=5)
 
-    prt.print_out('Average tour length: ', out)
-
-def str2bool(v):
-    return v.lower() in ('true', '1')
-
+    printer.print_out('Average tour length: ', out)
 
 if __name__ == '__main__':
-
+    # process input arguments
+    # e.g. python3 train.py --task=vrp --nodes=10 --gpu=0
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=12345, type=int)
     parser.add_argument('--checkpoint', default=None)
@@ -383,33 +348,31 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', default=-1, type=int)
     parser.add_argument('--model_dir', type=str, default='')
     parser.add_argument('--log_dir', type=str, default='logs')
-    parser.add_argument('--stdout_print', default=True, type=str2bool, help='print control')
-
+    parser.add_argument('--stdout_print', default=True, type=utilities.str2bool, help='print control')
     args = parser.parse_args()
 
     # allow gpu to be specified from command line for testing
     if args.gpu >= 0:
         chosen_device = 'cuda:%d' % (args.gpu)
         globals()['device'] = torch.device(chosen_device)
+    print(device)
+    args.device = device
 
     # create log folder and log file
-    now = '%s' % datetime.datetime.now().time()
-    now = now.replace(':', '_')
-    args.save_dir = os.path.join(args.task, '%d' % args.num_nodes, now)
-    # file to write the stdout
     try:
+        now = '%s' % datetime.datetime.now().time()
+        now = now.replace(':', '_')
+        args.save_dir = os.path.join(args.task, '%d' % args.num_nodes, now)
         os.makedirs(args.save_dir)
     except:
         pass
     out_file = open(os.path.join(args.save_dir, 'results.txt'), 'w+')
-    prt = Logger(out_file, args.stdout_print)
+    printer = Logger(out_file, args.stdout_print)
 
-    print(device)
 
-    args.device = device
     # print the run args
     for key, value in sorted((vars(args)).items()):
-        prt.print_out("{}: {}".format(key, value))
+        printer.print_out("{}: {}".format(key, value))
 
     if args.task == 'tsp':
         train_tsp(args)

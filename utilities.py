@@ -2,6 +2,9 @@ import sys
 import time
 from datetime import datetime
 
+def str2bool(v):
+    return v.lower() in ('true', '1')
+
 # log the screen data to result.txt file
 class Logger(object):
     def __init__(self,f=None ,stdout_print=True):

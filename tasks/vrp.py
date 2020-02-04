@@ -19,6 +19,8 @@ import matplotlib.pyplot as plt
 class VehicleRoutingDataset(Dataset):
     def __init__(self, num_samples, input_size, max_load=20, max_demand=9,
                  seed=None):
+        # static: (num_samples, 2, nodes), second dimension is x, y coordinate of the customer
+        # dynamic: (num_samples, 2, nodes) second dimension is load and demands
         super(VehicleRoutingDataset, self).__init__()
 
         if max_load < max_demand:
@@ -43,19 +45,19 @@ class VehicleRoutingDataset(Dataset):
         dynamic_shape = (num_samples, 1, input_size + 1)
         loads = torch.full(dynamic_shape, 1.)
 
-        # All states will have their own intrinsic demand in [1, max_demand), 
-        # then scaled by the maximum load. E.g. if load=10 and max_demand=30, 
+        # All states will have their own intrinsic demand in [1, max_demand),
+        # then scaled by the maximum load. E.g. if load=10 and max_demand=30,
         # demands will be scaled to the range (0, 3)
         demands = torch.randint(1, max_demand + 1, dynamic_shape)
-        demands = demands / float(max_load)   # scale demand by max_load (why?)
+        demands = demands / float(max_load)   # are there the same as using full value?
 
         demands[:, 0, 0] = 0  # depot starts with a demand of 0
         self.dynamic = torch.tensor(np.concatenate((loads, demands), axis=1))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_samples
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         # (static, dynamic, start_loc)
         return (self.static[idx], self.dynamic[idx], self.static[idx, :, 0:1])
 
